@@ -8,9 +8,10 @@ Base: `refs/tags/v20261019.1` (`aa1216ec6e88ca3224dee74cb1dcb22628b6145d`)
 |--:|:--|:--|:--|:--|:--|
 | 1 | `caller-follows-pane` | source | Open tabs where the caller's pane is now: HERDR_WORKSPACE_ID and HERDR_PANE_ID are set once when a pane starts, so after pane move, or after the pane closes under a background agent, tabs landed in a workspace the user was not looking at. | not-submitted | Upstream resolves the caller's pane through the daemon instead of trusting HERDR_WORKSPACE_ID. |
 | 2 | `paths-are-not-addresses` | source | Refuse a file path typed as an address: a path to a file not written yet, such as /private/tmp/page.html, became https://private/tmp/page.html and opened a broken web tab instead of failing. | not-submitted | Upstream refuses paths in WebUrl::from_typed. |
-| 3 | `downstream-ci` | tooling | Run upstream CI on this repository's pull requests: upstream gates every CI job on github.repository == 'penso/herdr-gpui', and checks upstream changelog subjects that downstream patch commits do not follow. | not-submitted | Upstream CI runs on any repository, or this repository gets CI of its own. |
-| 4 | `no-dependabot` | tooling | Stop Dependabot opening dependency pull requests here: dependencies follow upstream, which this stack takes by rebasing onto upstream release tags. | not-submitted | This repository chooses its own dependency versions instead of upstream's. |
-| 5 | `fork-bookkeeping` | tooling | Own fork policy, generated evidence, and integration configuration. | inappropriate: downstream-only fork maintenance | The downstream fork is retired. |
+| 3 | `fragment-reuses-tab` | source | Reuse an agent's tab for the same page at another #fragment: opening localhost:4880/components/button#props beside an open localhost:4880/components/button stacked a second tab, because tabs were matched on the whole address. | not-submitted | Upstream matches reopened pages without their fragment. |
+| 4 | `downstream-ci` | tooling | Run upstream CI on this repository's pull requests: upstream gates every CI job on github.repository == 'penso/herdr-gpui', and checks upstream changelog subjects that downstream patch commits do not follow. | not-submitted | Upstream CI runs on any repository, or this repository gets CI of its own. |
+| 5 | `no-dependabot` | tooling | Stop Dependabot opening dependency pull requests here: dependencies follow upstream, which this stack takes by rebasing onto upstream release tags. | not-submitted | This repository chooses its own dependency versions instead of upstream's. |
+| 6 | `fork-bookkeeping` | tooling | Own fork policy, generated evidence, and integration configuration. | inappropriate: downstream-only fork maintenance | The downstream fork is retired. |
 
 ## Disabled
 

@@ -334,8 +334,8 @@ impl Store {
     }
 
     /// The tab one agent, or the user when `origin` is None, already opened
-    /// on this page, which showing the page again reuses rather than stacking
-    /// another tab.
+    /// on this page, at any `#` place on it, which showing the page again
+    /// reuses rather than stacking another tab.
     pub(crate) fn opened_before(
         &self,
         scope: &Scope,
@@ -350,7 +350,10 @@ impl Store {
                     && &tab.scope == scope
                     && tab.workspace_id == workspace_id
                     && tab.origin.as_deref() == origin
-                    && tab.location.as_ref() == Some(location)
+                    && tab
+                        .location
+                        .as_ref()
+                        .is_some_and(|tab| tab.same_page(location))
             })
             .map(|tab| tab.id)
     }

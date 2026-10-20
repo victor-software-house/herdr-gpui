@@ -202,6 +202,20 @@ impl Location {
         }
     }
 
+    /// Whether both are one page: web addresses that differ only after `#`
+    /// name places on the same page.
+    pub(crate) fn same_page(&self, other: &Self) -> bool {
+        fn page(url: &WebUrl) -> &str {
+            url.as_str()
+                .split_once('#')
+                .map_or(url.as_str(), |(page, _)| page)
+        }
+        match (self, other) {
+            (Self::Web { url }, Self::Web { url: other }) => page(url) == page(other),
+            _ => self == other,
+        }
+    }
+
     /// Whether a native page shows it, rather than the app drawing it.
     pub(crate) fn is_page(&self) -> bool {
         !matches!(
