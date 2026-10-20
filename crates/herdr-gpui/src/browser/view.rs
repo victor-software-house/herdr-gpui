@@ -12,6 +12,7 @@ use gpui::{prelude::*, *};
 use std::collections::{HashMap, HashSet};
 
 mod agent_tab;
+mod origins;
 pub(in crate::browser) mod present;
 mod render;
 mod requests;
@@ -71,6 +72,9 @@ pub(crate) struct Browser {
     /// The workspaces of the last snapshot and the boot they came from: one
     /// missing from the next snapshot of the same boot was closed.
     workspaces: Option<(Scope, String, HashSet<String>)>,
+    /// The tab origins asked about, with the daemon boot they were asked
+    /// in, so each is asked once.
+    origin_lookups: HashSet<(String, String)>,
     /// The Herdr tabs of the last snapshot, with its boot and revision: one
     /// missing from the next snapshot of the same boot, in a workspace still
     /// open, was closed and can be reopened.
@@ -122,6 +126,7 @@ impl Browser {
             failed: HashMap::new(),
             code_server: Default::default(),
             workspaces: None,
+            origin_lookups: HashSet::new(),
             herdr_tabs: None,
             #[cfg(any(target_os = "macos", windows))]
             annotations: Annotations::default(),
@@ -326,6 +331,7 @@ impl HerdrWindow {
         }
         self.observe_closed_herdr_tabs(cx);
         self.forget_closed_workspaces(cx);
+        self.follow_tab_origins(cx);
         self.settle_groups(window, cx);
         self.advance_close_run(window, cx);
         self.ensure_code_page(window, cx);

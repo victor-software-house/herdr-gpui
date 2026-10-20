@@ -5,7 +5,7 @@ use super::{Location, WebUrl, zoom::Zoom};
 use crate::{reorder::Beside, state_file};
 use gpui::{App, Global};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{collections::HashSet, path::PathBuf};
 
 const MAX_TABS: usize = 256;
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
@@ -363,6 +363,37 @@ impl Store {
         self.tabs
             .iter()
             .filter(move |tab| tab.origin.as_deref() == Some(pane_id))
+    }
+
+    /// The panes this daemon's tabs were opened from that `panes`, the
+    /// daemon's panes now, no longer has: each moved or closed since.
+    pub(crate) fn lost_origins(&self, scope: &Scope, panes: &HashSet<&str>) -> Vec<String> {
+        let mut lost: Vec<String> = self
+            .tabs
+            .iter()
+            .filter(|tab| &tab.scope == scope)
+            .filter_map(|tab| tab.origin.clone())
+            .filter(|pane| !panes.contains(pane.as_str()))
+            .collect();
+        lost.sort();
+        lost.dedup();
+        lost
+    }
+
+    /// Points the tabs opened from pane `from` at the pane it is now, `to`,
+    /// or at no agent once it closed. Returns whether any tab changed.
+    pub(crate) fn follow_origin(&mut self, scope: &Scope, from: &str, to: Option<&str>) -> bool {
+        let mut changed = false;
+        for tab in &mut self.tabs {
+            if &tab.scope == scope && tab.origin.as_deref() == Some(from) {
+                tab.origin = to.map(str::to_owned);
+                changed = true;
+            }
+        }
+        if changed {
+            self.save();
+        }
+        changed
     }
 
     /// Moves a tab beside another; whether it moved. Workspaces list their

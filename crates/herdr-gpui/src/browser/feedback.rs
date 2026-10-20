@@ -165,6 +165,16 @@ impl Feedback {
             .map(|(batch, _, added)| (*added, &batch.target))
     }
 
+    /// Points the batches kept for pane `from` of `scope` at the pane it is
+    /// now, `to`, after `pane move` gave it a new ID.
+    pub(crate) fn follow(&mut self, scope: &Scope, from: &str, to: &str) {
+        for (batch, ..) in &mut self.kept {
+            if &batch.target.scope == scope && batch.target.pane_id == from {
+                batch.target.pane_id = to.to_owned();
+            }
+        }
+    }
+
     pub(crate) fn has(&self, target: &FeedbackKey) -> bool {
         self.kept.iter().any(|(batch, ..)| &batch.target == target)
     }

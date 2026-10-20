@@ -173,6 +173,49 @@ fn an_agent_reopening_its_page_reuses_the_tab() {
 }
 
 #[test]
+fn tabs_follow_their_agents_pane_when_it_moves_or_closes() {
+    let mut store = Store::default();
+    let local = Scope::endpoint("local");
+    let host = Scope::endpoint("ssh:h");
+    let page = url("https://a.test/");
+    let moved = store
+        .open(local.clone(), "w1", page.clone(), Some("w1:p2".into()))
+        .unwrap();
+    let closed = store
+        .open(
+            local.clone(),
+            "w1",
+            url("https://b.test/"),
+            Some("w7:p1".into()),
+        )
+        .unwrap();
+    let remote = store
+        .open(host.clone(), "w1", page.clone(), Some("w1:p2".into()))
+        .unwrap();
+
+    // The daemon's panes now: w1:p2 moved to w2:p2 and w7:p1 closed.
+    let panes = HashSet::from(["w1:p1", "w2:p2"]);
+    assert_eq!(store.lost_origins(&local, &panes), ["w1:p2", "w7:p1"]);
+
+    assert!(store.follow_origin(&local, "w1:p2", Some("w2:p2")));
+    assert!(store.follow_origin(&local, "w7:p1", None));
+    assert!(store.lost_origins(&local, &panes).is_empty());
+
+    // `browser reload` from the moved pane finds the tab it opened, and
+    // showing the page again reuses it.
+    let ids: Vec<_> = store.opened_by("w2:p2").map(|tab| tab.id).collect();
+    assert_eq!(ids, [moved]);
+    assert_eq!(
+        store.opened_before(&local, "w1", Some("w2:p2"), &page.clone().unwrap()),
+        Some(moved)
+    );
+    // The closed pane's tab keeps no agent, so Send offers no pane.
+    assert_eq!(store.get(closed).unwrap().origin, None);
+    // Another daemon's pane with the same ID is not this one.
+    assert_eq!(store.get(remote).unwrap().origin.as_deref(), Some("w1:p2"));
+}
+
+#[test]
 fn a_place_on_an_open_page_reuses_its_tab() {
     let mut store = Store::default();
     let scope = Scope::endpoint("local");
