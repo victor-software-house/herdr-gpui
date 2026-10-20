@@ -1,0 +1,601 @@
+origins-follow-panes
+
+From: Victor Araújo <victor@victor-software-house.com>
+
+Downstream-Reason: Keep each tab's agent pane current: pane move gives a pane a new ID and a closed pane has none, so notes, browser reload, and browser feedback missed tabs opened before a move, and notes for a closed pane's tab were kept where no agent could fetch them.
+Upstream-Status: not-submitted
+Drop-When: Upstream follows moved and closed panes for browser tab origins.
+---
+ .../herdr-gpui/src/browser/annotate_view/panel.rs  |   12 +++
+ crates/herdr-gpui/src/browser/feedback.rs          |   10 ++
+ crates/herdr-gpui/src/browser/feedback/tests.rs    |   26 ++++++
+ crates/herdr-gpui/src/browser/store.rs             |   33 +++++++
+ crates/herdr-gpui/src/browser/store/tests.rs       |   43 ++++++++++
+ crates/herdr-gpui/src/browser/view.rs              |    6 +
+ crates/herdr-gpui/src/browser/view/origins.rs      |   89 ++++++++++++++++++++
+ .../herdr-gpui/src/control/client/live_caller.rs   |   50 -----------
+ .../src/control/client/live_caller/tests.rs        |   22 +----
+ crates/herdr-gpui/src/main.rs                      |    1 
+ crates/herdr-gpui/src/pane_lookup.rs               |   83 +++++++++++++++++++
+ crates/herdr-gpui/src/pane_lookup/tests.rs         |   37 ++++++++
+ 12 files changed, 346 insertions(+), 66 deletions(-)
+ create mode 100644 crates/herdr-gpui/src/browser/view/origins.rs
+ create mode 100644 crates/herdr-gpui/src/pane_lookup.rs
+ create mode 100644 crates/herdr-gpui/src/pane_lookup/tests.rs
+
+diff --git a/crates/herdr-gpui/src/browser/annotate_view/panel.rs b/crates/herdr-gpui/src/browser/annotate_view/panel.rs
+index 1ebb95db..b4bee554 100644
+--- a/crates/herdr-gpui/src/browser/annotate_view/panel.rs
++++ b/crates/herdr-gpui/src/browser/annotate_view/panel.rs
+@@ -281,6 +281,18 @@ impl HerdrWindow {
+                                 cx.listener(move |this, _, _, cx| this.withdraw_notes(id, cx)),
+                             ))
+                         })
++                        // A page the user opened, or one whose agent's pane
++                        // closed: Copy is the only way out, so say why.
++                        .when(!origin && queued.is_none(), |row| {
++                            row.child(
++                                div()
++                                    .id("annotation-no-agent")
++                                    .debug_selector(|| "annotation-no-agent".into())
++                                    .w_full()
++                                    .text_color(rgb(theme.muted))
++                                    .child("No agent is attached to this page. Copy the notes to paste them where you want."),
++                            )
++                        })
+                         .when(origin && queued.is_none(), |row| {
+                             row.child(button("annotation-send", send_label.into(), true).on_click(
+                                 cx.listener(move |this, _, _, cx| this.send_notes(&tab_for_send, cx)),
+diff --git a/crates/herdr-gpui/src/browser/feedback.rs b/crates/herdr-gpui/src/browser/feedback.rs
+index d913f3f1..b662fca3 100644
+--- a/crates/herdr-gpui/src/browser/feedback.rs
++++ b/crates/herdr-gpui/src/browser/feedback.rs
+@@ -165,6 +165,16 @@ impl Feedback {
+             .map(|(batch, _, added)| (*added, &batch.target))
+     }
+ 
++    /// Points the batches kept for pane `from` of `scope` at the pane it is
++    /// now, `to`, after `pane move` gave it a new ID.
++    pub(crate) fn follow(&mut self, scope: &Scope, from: &str, to: &str) {
++        for (batch, ..) in &mut self.kept {
++            if &batch.target.scope == scope && batch.target.pane_id == from {
++                batch.target.pane_id = to.to_owned();
++            }
++        }
++    }
++
+     pub(crate) fn has(&self, target: &FeedbackKey) -> bool {
+         self.kept.iter().any(|(batch, ..)| &batch.target == target)
+     }
+diff --git a/crates/herdr-gpui/src/browser/feedback/tests.rs b/crates/herdr-gpui/src/browser/feedback/tests.rs
+index 077f7765..3455046d 100644
+--- a/crates/herdr-gpui/src/browser/feedback/tests.rs
++++ b/crates/herdr-gpui/src/browser/feedback/tests.rs
+@@ -37,5 +37,31 @@ fn batches_are_taken_once_per_pane_and_bounded() {
+     );
+ }
+ 
++#[test]
++fn kept_notes_follow_a_moved_pane() {
++    let mut feedback = Feedback::default();
++    feedback.keep(batch("w1:p2", "kept before the move"), None);
++    feedback.keep(batch("w1:p1", "for the pane that stayed"), None);
++    let scope = Scope::local(std::path::Path::new("/default.sock"));
++    feedback.follow(&scope, "w1:p2", "w2:p2");
++    // `browser feedback` from the moved pane asks with its new ID.
++    assert_eq!(
++        feedback.take(&key("/default.sock", "w2:p2")).as_deref(),
++        Some("kept before the move")
++    );
++    assert!(feedback.take(&key("/default.sock", "w1:p2")).is_none());
++    assert!(feedback.has(&key("/default.sock", "w1:p1")));
++    // Another daemon's pane with the same ID is left alone.
++    feedback.keep(
++        Batch {
++            target: key("/other.sock", "w1:p2"),
++            text: "other daemon".into(),
++        },
++        None,
++    );
++    feedback.follow(&scope, "w1:p2", "w2:p2");
++    assert!(feedback.has(&key("/other.sock", "w1:p2")));
++}
++
+ mod session_isolation;
+ mod take_budget;
+diff --git a/crates/herdr-gpui/src/browser/store.rs b/crates/herdr-gpui/src/browser/store.rs
+index 83962735..e94ece77 100644
+--- a/crates/herdr-gpui/src/browser/store.rs
++++ b/crates/herdr-gpui/src/browser/store.rs
+@@ -5,7 +5,7 @@ use super::{Location, WebUrl, zoom::Zoom};
+ use crate::{reorder::Beside, state_file};
+ use gpui::{App, Global};
+ use serde::{Deserialize, Serialize};
+-use std::path::PathBuf;
++use std::{collections::HashSet, path::PathBuf};
+ 
+ const MAX_TABS: usize = 256;
+ const MAX_FILE_BYTES: u64 = 1024 * 1024;
+@@ -365,6 +365,37 @@ impl Store {
+             .filter(move |tab| tab.origin.as_deref() == Some(pane_id))
+     }
+ 
++    /// The panes this daemon's tabs were opened from that `panes`, the
++    /// daemon's panes now, no longer has: each moved or closed since.
++    pub(crate) fn lost_origins(&self, scope: &Scope, panes: &HashSet<&str>) -> Vec<String> {
++        let mut lost: Vec<String> = self
++            .tabs
++            .iter()
++            .filter(|tab| &tab.scope == scope)
++            .filter_map(|tab| tab.origin.clone())
++            .filter(|pane| !panes.contains(pane.as_str()))
++            .collect();
++        lost.sort();
++        lost.dedup();
++        lost
++    }
++
++    /// Points the tabs opened from pane `from` at the pane it is now, `to`,
++    /// or at no agent once it closed. Returns whether any tab changed.
++    pub(crate) fn follow_origin(&mut self, scope: &Scope, from: &str, to: Option<&str>) -> bool {
++        let mut changed = false;
++        for tab in &mut self.tabs {
++            if &tab.scope == scope && tab.origin.as_deref() == Some(from) {
++                tab.origin = to.map(str::to_owned);
++                changed = true;
++            }
++        }
++        if changed {
++            self.save();
++        }
++        changed
++    }
++
+     /// Moves a tab beside another; whether it moved. Workspaces list their
+     /// tabs in store order, so landing beside one of the same workspace
+     /// reorders that workspace's strip alone.
+diff --git a/crates/herdr-gpui/src/browser/store/tests.rs b/crates/herdr-gpui/src/browser/store/tests.rs
+index d5656647..4b30bfc7 100644
+--- a/crates/herdr-gpui/src/browser/store/tests.rs
++++ b/crates/herdr-gpui/src/browser/store/tests.rs
+@@ -172,6 +172,49 @@ fn an_agent_reopening_its_page_reuses_the_tab() {
+     assert_eq!(ids, [mine]);
+ }
+ 
++#[test]
++fn tabs_follow_their_agents_pane_when_it_moves_or_closes() {
++    let mut store = Store::default();
++    let local = Scope::endpoint("local");
++    let host = Scope::endpoint("ssh:h");
++    let page = url("https://a.test/");
++    let moved = store
++        .open(local.clone(), "w1", page.clone(), Some("w1:p2".into()))
++        .unwrap();
++    let closed = store
++        .open(
++            local.clone(),
++            "w1",
++            url("https://b.test/"),
++            Some("w7:p1".into()),
++        )
++        .unwrap();
++    let remote = store
++        .open(host.clone(), "w1", page.clone(), Some("w1:p2".into()))
++        .unwrap();
++
++    // The daemon's panes now: w1:p2 moved to w2:p2 and w7:p1 closed.
++    let panes = HashSet::from(["w1:p1", "w2:p2"]);
++    assert_eq!(store.lost_origins(&local, &panes), ["w1:p2", "w7:p1"]);
++
++    assert!(store.follow_origin(&local, "w1:p2", Some("w2:p2")));
++    assert!(store.follow_origin(&local, "w7:p1", None));
++    assert!(store.lost_origins(&local, &panes).is_empty());
++
++    // `browser reload` from the moved pane finds the tab it opened, and
++    // showing the page again reuses it.
++    let ids: Vec<_> = store.opened_by("w2:p2").map(|tab| tab.id).collect();
++    assert_eq!(ids, [moved]);
++    assert_eq!(
++        store.opened_before(&local, "w1", Some("w2:p2"), &page.clone().unwrap()),
++        Some(moved)
++    );
++    // The closed pane's tab keeps no agent, so Send offers no pane.
++    assert_eq!(store.get(closed).unwrap().origin, None);
++    // Another daemon's pane with the same ID is not this one.
++    assert_eq!(store.get(remote).unwrap().origin.as_deref(), Some("w1:p2"));
++}
++
+ #[test]
+ fn a_place_on_an_open_page_reuses_its_tab() {
+     let mut store = Store::default();
+diff --git a/crates/herdr-gpui/src/browser/view.rs b/crates/herdr-gpui/src/browser/view.rs
+index a89e2899..4bbace98 100644
+--- a/crates/herdr-gpui/src/browser/view.rs
++++ b/crates/herdr-gpui/src/browser/view.rs
+@@ -12,6 +12,7 @@ use gpui::{prelude::*, *};
+ use std::collections::{HashMap, HashSet};
+ 
+ mod agent_tab;
++mod origins;
+ pub(in crate::browser) mod present;
+ mod render;
+ mod requests;
+@@ -71,6 +72,9 @@ pub(crate) struct Browser {
+     /// The workspaces of the last snapshot and the boot they came from: one
+     /// missing from the next snapshot of the same boot was closed.
+     workspaces: Option<(Scope, String, HashSet<String>)>,
++    /// The tab origins asked about, with the daemon boot they were asked
++    /// in, so each is asked once.
++    origin_lookups: HashSet<(String, String)>,
+     /// The Herdr tabs of the last snapshot, with its boot and revision: one
+     /// missing from the next snapshot of the same boot, in a workspace still
+     /// open, was closed and can be reopened.
+@@ -122,6 +126,7 @@ impl Browser {
+             failed: HashMap::new(),
+             code_server: Default::default(),
+             workspaces: None,
++            origin_lookups: HashSet::new(),
+             herdr_tabs: None,
+             #[cfg(any(target_os = "macos", windows))]
+             annotations: Annotations::default(),
+@@ -326,6 +331,7 @@ impl HerdrWindow {
+         }
+         self.observe_closed_herdr_tabs(cx);
+         self.forget_closed_workspaces(cx);
++        self.follow_tab_origins(cx);
+         self.settle_groups(window, cx);
+         self.advance_close_run(window, cx);
+         self.ensure_code_page(window, cx);
+diff --git a/crates/herdr-gpui/src/browser/view/origins.rs b/crates/herdr-gpui/src/browser/view/origins.rs
+new file mode 100644
+index 00000000..3f4d5af1
+--- /dev/null
++++ b/crates/herdr-gpui/src/browser/view/origins.rs
+@@ -0,0 +1,89 @@
++//! A tab keeps the pane whose agent opened it, where its notes go and which
++//! `browser reload` and `browser feedback` find it by. `pane move` gives a
++//! pane a new ID and a closed pane has none, so an origin missing from the
++//! daemon's panes is asked about: the daemon still resolves a moved pane's
++//! earlier IDs, and the tab follows the pane; a closed pane's tab keeps no
++//! agent, so its notes are copied rather than kept for a pane no agent can
++//! ask for. Tabs of SSH hosts keep the origin they were opened with.
++
++use super::{scope, store};
++use crate::{
++    HerdrWindow,
++    browser::{Feedback, Store},
++    pane_lookup::{self, Lookup},
++};
++use gpui::*;
++use std::{collections::HashSet, sync::atomic::AtomicBool};
++
++impl HerdrWindow {
++    pub(super) fn follow_tab_origins(&mut self, cx: &mut Context<Self>) {
++        let Some(snapshot) = self.live.snapshot.as_ref() else {
++            return;
++        };
++        let target = &self.endpoints[self.selected_endpoint].connection.target;
++        // Asking needs the host scripts that moving a pane uses, which need
++        // a POSIX client.
++        if target.is_remote() || crate::pane_move::refusal(target).is_some() {
++            return;
++        }
++        let scope = scope(&self.endpoints[self.selected_endpoint]);
++        let panes: HashSet<&str> = snapshot
++            .panes
++            .iter()
++            .map(|pane| pane.pane_id.as_str())
++            .collect();
++        let Some(store) = store(cx) else {
++            return;
++        };
++        // Each pane is asked about once per daemon boot: an origin with no
++        // answer keeps today's behaviour rather than asking every frame.
++        let boot = &snapshot.boot_id;
++        let lost: Vec<String> = store
++            .lost_origins(&scope, &panes)
++            .into_iter()
++            .filter(|pane| {
++                self.browser
++                    .origin_lookups
++                    .insert((boot.clone(), pane.clone()))
++            })
++            .collect();
++        if lost.is_empty() {
++            return;
++        }
++        let Ok(host) = crate::pane_move::host_for(target) else {
++            return;
++        };
++        // The CLI is a child process: never on this thread.
++        let answers = cx.background_executor().spawn(async move {
++            let cancelled = AtomicBool::new(false);
++            lost.into_iter()
++                .map(|pane| {
++                    let lookup = pane_lookup::ask_host(&host, &pane, &cancelled);
++                    (pane, lookup)
++                })
++                .collect::<Vec<_>>()
++        });
++        cx.spawn(async move |this, cx| {
++            let answers = answers.await;
++            let _ = this.update(cx, |_, cx| {
++                for (pane, lookup) in &answers {
++                    let to = match lookup {
++                        Lookup::Live { pane_id, .. } => {
++                            // Notes kept for the pane before it moved wait
++                            // for it at its new ID.
++                            cx.default_global::<Feedback>()
++                                .follow(&scope, pane, pane_id);
++                            Some(pane_id.as_str())
++                        }
++                        Lookup::Gone => None,
++                        Lookup::Unknown => continue,
++                    };
++                    if Store::update(cx, |store| store.follow_origin(&scope, pane, to)) {
++                        cx.notify();
++                    }
++                }
++            });
++        })
++        .detach();
++    }
++}
+diff --git a/crates/herdr-gpui/src/control/client/live_caller.rs b/crates/herdr-gpui/src/control/client/live_caller.rs
+index 19bd635e..02ae008d 100644
+--- a/crates/herdr-gpui/src/control/client/live_caller.rs
++++ b/crates/herdr-gpui/src/control/client/live_caller.rs
+@@ -8,60 +8,14 @@
+ //! resolves a moved pane's old ID to the pane itself, so asking the daemon
+ //! for the caller's pane gives the workspace it is in now.
+ 
+-use serde_json::Value;
+-
+-/// What the daemon says about the caller's pane.
+-#[derive(Debug, PartialEq, Eq)]
+-pub(super) enum Lookup {
+-    /// The pane lives, now as `pane_id` in `workspace_id`.
+-    Live {
+-        pane_id: String,
+-        workspace_id: String,
+-    },
+-    /// The pane closed: neither variable names where the caller is.
+-    Gone,
+-    /// No answer, such as no `herdr` executable or no daemon: the variables
+-    /// are all there is.
+-    Unknown,
+-}
++pub(super) use crate::pane_lookup::Lookup;
+ 
+ /// Asks the caller's daemon, through the `herdr` CLI Herdr gave the pane,
+ /// where `pane_id` is now. The CLI finds the daemon from the same pane
+ /// variables, as it does when an agent runs it.
+ pub(super) fn lookup(pane_id: &str) -> Lookup {
+     let program = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
+-    let Ok(output) = herdr_client::new_command(program)
+-        .args(["pane", "get", pane_id])
+-        .output()
+-    else {
+-        return Lookup::Unknown;
+-    };
+-    // The CLI prints a result on stdout and a server error on stderr.
+-    parse(if output.status.success() {
+-        &output.stdout
+-    } else {
+-        &output.stderr
+-    })
+-}
+-
+-/// The answer in a `herdr pane get` reply.
+-pub(super) fn parse(reply: &[u8]) -> Lookup {
+-    let Ok(reply) = serde_json::from_slice::<Value>(reply) else {
+-        return Lookup::Unknown;
+-    };
+-    if reply["error"]["code"] == "pane_not_found" {
+-        return Lookup::Gone;
+-    }
+-    let pane = &reply["result"]["pane"];
+-    match (pane["pane_id"].as_str(), pane["workspace_id"].as_str()) {
+-        (Some(pane_id), Some(workspace_id)) if !pane_id.is_empty() && !workspace_id.is_empty() => {
+-            Lookup::Live {
+-                pane_id: pane_id.to_owned(),
+-                workspace_id: workspace_id.to_owned(),
+-            }
+-        }
+-        _ => Lookup::Unknown,
+-    }
++    crate::pane_lookup::ask(herdr_client::new_command(program), pane_id)
+ }
+ 
+ /// The pane and workspace a request carries. A `--workspace` the caller
+diff --git a/crates/herdr-gpui/src/control/client/live_caller/tests.rs b/crates/herdr-gpui/src/control/client/live_caller/tests.rs
+index d08b100a..dac75d84 100644
+--- a/crates/herdr-gpui/src/control/client/live_caller/tests.rs
++++ b/crates/herdr-gpui/src/control/client/live_caller/tests.rs
+@@ -8,17 +8,18 @@ fn some(id: &str) -> Option<String> {
+ fn a_moved_pane_opens_in_the_workspace_it_is_in_now() {
+     // The agent's shell still has the variables of the workspace it started
+     // in; the daemon resolves the old pane ID to the pane in its new place.
+-    let reply = br#"{"id":"cli:pane:get","result":{"type":"pane_info","pane":{"pane_id":"w86:p3","workspace_id":"w86","tab_id":"w86:t1"}}}"#;
++    let live = Lookup::Live {
++        pane_id: "w86:p3".into(),
++        workspace_id: "w86".into(),
++    };
+     assert_eq!(
+-        place(some("w85:p2"), some("w85"), None, parse(reply)),
++        place(some("w85:p2"), some("w85"), None, live),
+         (some("w86:p3"), some("w86"))
+     );
+ }
+ 
+ #[test]
+ fn a_closed_pane_names_no_workspace_so_the_frontmost_window_opens_it() {
+-    let reply = br#"{"error":{"code":"pane_not_found","message":"pane w7Y:p1 not found"},"id":"cli:pane:get"}"#;
+-    assert_eq!(parse(reply), Lookup::Gone);
+     assert_eq!(
+         place(some("w7Y:p1"), some("w7Y"), None, Lookup::Gone),
+         (None, None)
+@@ -43,19 +44,6 @@ fn a_named_workspace_wins_over_the_daemon_and_the_variables() {
+ 
+ #[test]
+ fn without_an_answer_the_variables_still_place_the_tab() {
+-    for reply in [
+-        &b""[..],
+-        b"not json",
+-        br#"{"error":{"code":"server_unavailable"}}"#,
+-        br#"{"result":{"pane":{}}}"#,
+-    ] {
+-        assert_eq!(
+-            parse(reply),
+-            Lookup::Unknown,
+-            "{}",
+-            String::from_utf8_lossy(reply)
+-        );
+-    }
+     assert_eq!(
+         place(some("w1:p1"), some("w1"), None, Lookup::Unknown),
+         (some("w1:p1"), some("w1"))
+diff --git a/crates/herdr-gpui/src/main.rs b/crates/herdr-gpui/src/main.rs
+index 2d7abc77..69888911 100644
+--- a/crates/herdr-gpui/src/main.rs
++++ b/crates/herdr-gpui/src/main.rs
+@@ -106,6 +106,7 @@ mod orchestrator;
+ mod osc52;
+ mod overview;
+ mod palette;
++mod pane_lookup;
+ mod pane_menu;
+ mod pane_move;
+ mod panel_resize;
+diff --git a/crates/herdr-gpui/src/pane_lookup.rs b/crates/herdr-gpui/src/pane_lookup.rs
+new file mode 100644
+index 00000000..fde88849
+--- /dev/null
++++ b/crates/herdr-gpui/src/pane_lookup.rs
+@@ -0,0 +1,83 @@
++//! What a daemon says about a pane ID, asked through `herdr pane get`.
++//!
++//! `pane move` to another workspace gives a pane a new ID. Herdr still
++//! resolves each earlier ID to the pane where it is now, through any number
++//! of moves, and answers `pane_not_found` once the pane closed.
++
++use serde_json::Value;
++use std::{process::Command, sync::atomic::AtomicBool};
++
++/// What the daemon says about a pane.
++#[derive(Debug, PartialEq, Eq)]
++pub(crate) enum Lookup {
++    /// The pane lives, now as `pane_id` in `workspace_id`.
++    Live {
++        pane_id: String,
++        workspace_id: String,
++    },
++    /// The pane closed.
++    Gone,
++    /// No answer, such as no `herdr` executable or no daemon.
++    Unknown,
++}
++
++/// Runs `command`, a `herdr` CLI aimed at the daemon, as `pane get
++/// pane_id`.
++pub(crate) fn ask(mut command: Command, pane_id: &str) -> Lookup {
++    let Ok(output) = command.args(["pane", "get", pane_id]).output() else {
++        return Lookup::Unknown;
++    };
++    // The CLI prints a result on stdout and a server error on stderr.
++    parse(if output.status.success() {
++        &output.stdout
++    } else {
++        &output.stderr
++    })
++}
++
++/// Asks the daemon `host` scripts reach, as moving a pane does. Blocking:
++/// call only on a background worker.
++pub(crate) fn ask_host(
++    host: &crate::teleport::Host,
++    pane_id: &str,
++    cancelled: &AtomicBool,
++) -> Lookup {
++    // The CLI would read a leading dash as an option.
++    if pane_id.starts_with('-') {
++        return Lookup::Unknown;
++    }
++    let line = crate::teleport::Host::herdr_line(&["pane", "get", pane_id]);
++    match host.capture(&line, cancelled) {
++        Ok(stdout) => parse(&stdout),
++        // The CLI prints its error envelope as the last stderr line.
++        Err(herdr_client::Error::ScriptExit { stderr, .. }) => stderr
++            .lines()
++            .rev()
++            .find(|line| !line.trim().is_empty())
++            .map_or(Lookup::Unknown, |line| parse(line.trim().as_bytes())),
++        Err(_) => Lookup::Unknown,
++    }
++}
++
++/// The answer in a `herdr pane get` reply.
++pub(crate) fn parse(reply: &[u8]) -> Lookup {
++    let Ok(reply) = serde_json::from_slice::<Value>(reply) else {
++        return Lookup::Unknown;
++    };
++    if reply["error"]["code"] == "pane_not_found" {
++        return Lookup::Gone;
++    }
++    let pane = &reply["result"]["pane"];
++    match (pane["pane_id"].as_str(), pane["workspace_id"].as_str()) {
++        (Some(pane_id), Some(workspace_id)) if !pane_id.is_empty() && !workspace_id.is_empty() => {
++            Lookup::Live {
++                pane_id: pane_id.to_owned(),
++                workspace_id: workspace_id.to_owned(),
++            }
++        }
++        _ => Lookup::Unknown,
++    }
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/herdr-gpui/src/pane_lookup/tests.rs b/crates/herdr-gpui/src/pane_lookup/tests.rs
+new file mode 100644
+index 00000000..bef74abc
+--- /dev/null
++++ b/crates/herdr-gpui/src/pane_lookup/tests.rs
+@@ -0,0 +1,37 @@
++use super::*;
++
++#[test]
++fn a_moved_pane_answers_where_it_is_now() {
++    // `herdr pane get w1:p2` after `pane move w1:p2 --tab w2:t1`.
++    let reply = br#"{"id":"cli:pane:get","result":{"type":"pane_info","pane":{"pane_id":"w2:p2","workspace_id":"w2","tab_id":"w2:t1"}}}"#;
++    assert_eq!(
++        parse(reply),
++        Lookup::Live {
++            pane_id: "w2:p2".into(),
++            workspace_id: "w2".into(),
++        }
++    );
++}
++
++#[test]
++fn a_closed_pane_is_gone() {
++    let reply = br#"{"error":{"code":"pane_not_found","message":"pane w7Y:p1 not found"},"id":"cli:pane:get"}"#;
++    assert_eq!(parse(reply), Lookup::Gone);
++}
++
++#[test]
++fn anything_else_is_no_answer() {
++    for reply in [
++        &b""[..],
++        b"not json",
++        br#"{"error":{"code":"server_unavailable"}}"#,
++        br#"{"result":{"pane":{}}}"#,
++    ] {
++        assert_eq!(
++            parse(reply),
++            Lookup::Unknown,
++            "{}",
++            String::from_utf8_lossy(reply)
++        );
++    }
++}

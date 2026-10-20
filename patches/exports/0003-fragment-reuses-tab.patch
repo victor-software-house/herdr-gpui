@@ -1,0 +1,137 @@
+fragment-reuses-tab
+
+From: Victor Araújo <victor@victor-software-house.com>
+
+Downstream-Reason: Reuse an agent's tab for the same page at another #fragment: opening localhost:4880/components/button#props beside an open localhost:4880/components/button stacked a second tab, because tabs were matched on the whole address.
+Upstream-Status: not-submitted
+Drop-When: Upstream matches reopened pages without their fragment.
+---
+ crates/herdr-gpui/src/browser/location.rs       |   14 +++++++++++
+ crates/herdr-gpui/src/browser/store.rs          |    9 +++++--
+ crates/herdr-gpui/src/browser/store/tests.rs    |   29 +++++++++++++++++++++++
+ crates/herdr-gpui/src/browser/view/agent_tab.rs |   15 ++++++++++--
+ 4 files changed, 62 insertions(+), 5 deletions(-)
+
+diff --git a/crates/herdr-gpui/src/browser/location.rs b/crates/herdr-gpui/src/browser/location.rs
+index b75ce33b..d15b197a 100644
+--- a/crates/herdr-gpui/src/browser/location.rs
++++ b/crates/herdr-gpui/src/browser/location.rs
+@@ -202,6 +202,20 @@ impl Location {
+         }
+     }
+ 
++    /// Whether both are one page: web addresses that differ only after `#`
++    /// name places on the same page.
++    pub(crate) fn same_page(&self, other: &Self) -> bool {
++        fn page(url: &WebUrl) -> &str {
++            url.as_str()
++                .split_once('#')
++                .map_or(url.as_str(), |(page, _)| page)
++        }
++        match (self, other) {
++            (Self::Web { url }, Self::Web { url: other }) => page(url) == page(other),
++            _ => self == other,
++        }
++    }
++
+     /// Whether a native page shows it, rather than the app drawing it.
+     pub(crate) fn is_page(&self) -> bool {
+         !matches!(
+diff --git a/crates/herdr-gpui/src/browser/store.rs b/crates/herdr-gpui/src/browser/store.rs
+index 5555bcfe..83962735 100644
+--- a/crates/herdr-gpui/src/browser/store.rs
++++ b/crates/herdr-gpui/src/browser/store.rs
+@@ -334,8 +334,8 @@ impl Store {
+     }
+ 
+     /// The tab one agent, or the user when `origin` is None, already opened
+-    /// on this page, which showing the page again reuses rather than stacking
+-    /// another tab.
++    /// on this page, at any `#` place on it, which showing the page again
++    /// reuses rather than stacking another tab.
+     pub(crate) fn opened_before(
+         &self,
+         scope: &Scope,
+@@ -350,7 +350,10 @@ impl Store {
+                     && &tab.scope == scope
+                     && tab.workspace_id == workspace_id
+                     && tab.origin.as_deref() == origin
+-                    && tab.location.as_ref() == Some(location)
++                    && tab
++                        .location
++                        .as_ref()
++                        .is_some_and(|tab| tab.same_page(location))
+             })
+             .map(|tab| tab.id)
+     }
+diff --git a/crates/herdr-gpui/src/browser/store/tests.rs b/crates/herdr-gpui/src/browser/store/tests.rs
+index bba6cec3..d5656647 100644
+--- a/crates/herdr-gpui/src/browser/store/tests.rs
++++ b/crates/herdr-gpui/src/browser/store/tests.rs
+@@ -172,6 +172,35 @@ fn an_agent_reopening_its_page_reuses_the_tab() {
+     assert_eq!(ids, [mine]);
+ }
+ 
++#[test]
++fn a_place_on_an_open_page_reuses_its_tab() {
++    let mut store = Store::default();
++    let scope = Scope::endpoint("local");
++    let button = store
++        .open(
++            scope.clone(),
++            "w_1",
++            url("http://localhost:4880/components/button"),
++            Some("w_1:p1".into()),
++        )
++        .unwrap();
++    let reopened = |store: &Store, address| {
++        store.opened_before(&scope, "w_1", Some("w_1:p1"), &url(address).unwrap())
++    };
++    assert_eq!(
++        reopened(&store, "http://localhost:4880/components/button#props"),
++        Some(button)
++    );
++    assert_eq!(
++        reopened(&store, "http://localhost:4880/components/card#props"),
++        None
++    );
++    assert_eq!(
++        reopened(&store, "http://localhost:4880/components/button?theme=dark"),
++        None
++    );
++}
++
+ /// A workspace's VS Code tab is listed in its strips like any tab, and is
+ /// still its one VS Code tab, never handed to an agent.
+ #[test]
+diff --git a/crates/herdr-gpui/src/browser/view/agent_tab.rs b/crates/herdr-gpui/src/browser/view/agent_tab.rs
+index 40176d31..fea51443 100644
+--- a/crates/herdr-gpui/src/browser/view/agent_tab.rs
++++ b/crates/herdr-gpui/src/browser/view/agent_tab.rs
+@@ -25,13 +25,24 @@ impl HerdrWindow {
+     ) -> Option<TabId> {
+         let scope = scope(&self.endpoints[index]);
+         // An agent showing the same page again gets its tab back, reloaded,
+-        // rather than another tab for every revision.
++        // rather than another tab for every revision; at another `#` place
++        // on it, the tab goes there.
+         let before =
+             store(cx).and_then(|store| store.opened_before(&scope, workspace, origin, location));
+         let id = match before {
+             Some(id) => {
++                let moved = store(cx)
++                    .and_then(|store| store.get(id))
++                    .is_some_and(|tab| tab.location.as_ref() != Some(location));
++                if moved {
++                    Store::update(cx, |store| store.visited(id, Some(location.clone()), None));
++                }
+                 #[cfg(any(target_os = "macos", windows))]
+-                self.browser.pages.reload(id);
++                if moved {
++                    self.browser.pages.load(id, location);
++                } else {
++                    self.browser.pages.reload(id);
++                }
+                 id
+             }
+             None => {

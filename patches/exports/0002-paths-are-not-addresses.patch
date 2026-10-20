@@ -1,0 +1,79 @@
+paths-are-not-addresses
+
+From: Victor Araújo <victor@victor-software-house.com>
+
+Downstream-Reason: Refuse a file path typed as an address: a path to a file not written yet, such as /private/tmp/page.html, became https://private/tmp/page.html and opened a broken web tab instead of failing.
+Upstream-Status: not-submitted
+Drop-When: Upstream refuses paths in WebUrl::from_typed.
+---
+ crates/herdr-gpui/src/browser.rs |   25 +++++++++++++++++++++++--
+ crates/herdr-gpui/tests/cli.rs   |    8 ++++++++
+ 2 files changed, 31 insertions(+), 2 deletions(-)
+
+diff --git a/crates/herdr-gpui/src/browser.rs b/crates/herdr-gpui/src/browser.rs
+index cc127ddf..1418fddf 100644
+--- a/crates/herdr-gpui/src/browser.rs
++++ b/crates/herdr-gpui/src/browser.rs
+@@ -150,13 +150,19 @@ impl WebUrl {
+ 
+     /// What someone typed into the address field: a bare host such as
+     /// `localhost:3000` or `example.com/docs` gets a scheme, local hosts plain
+-    /// http and everything else https.
++    /// http and everything else https. A file path is no address, so
++    /// `/private/tmp/page.html` never becomes `https://private/tmp/page.html`.
+     pub(crate) fn from_typed(text: &str) -> crate::Result<Self> {
+         let text = text.trim();
+         if let Ok(url) = Self::try_from(text) {
+             return Ok(url);
+         }
+-        if text.contains("://") {
++        // `C:\page.html` would otherwise read as the host `c`.
++        let drive = matches!(
++            text.as_bytes(),
++            [letter, b':', b'\\' | b'/', ..] if letter.is_ascii_alphabetic()
++        );
++        if text.contains("://") || text.starts_with(['/', '\\', '.', '~']) || drive {
+             return Err(crate::Error::InvalidBrowserUrl);
+         }
+         let host = text.split(['/', ':', '?', '#']).next().unwrap_or_default();
+@@ -253,6 +259,21 @@ mod tests {
+         assert!(typed("").is_err());
+     }
+ 
++    #[test]
++    fn typed_paths_are_not_addresses() {
++        for path in [
++            "/private/tmp/page.html",
++            "./page.html",
++            "../page.html",
++            "~/page.html",
++            r"\\server\share\page.html",
++            r"C:\Users\me\page.html",
++            "c:/page.html",
++        ] {
++            assert!(WebUrl::from_typed(path).is_err(), "{path}");
++        }
++    }
++
+     #[test]
+     fn loopback_addresses_move_to_a_forwarded_port() {
+         let url = |text| WebUrl::from_typed(text).unwrap();
+diff --git a/crates/herdr-gpui/tests/cli.rs b/crates/herdr-gpui/tests/cli.rs
+index e5547ac6..acd7b3cc 100644
+--- a/crates/herdr-gpui/tests/cli.rs
++++ b/crates/herdr-gpui/tests/cli.rs
+@@ -250,6 +250,14 @@ fn local_pages_and_feedback_need_the_app_and_a_plain_folder() {
+     let output = cli_in(&["browser", "open", page], Some(state.path()));
+     assert_eq!(output.status.code(), Some(3), "{output:?}");
+ 
++    // A file not written yet is refused, not opened as a web address.
++    let missing = site.path().join("later.html");
++    let output = cli_in(
++        &["browser", "open", missing.to_str().unwrap()],
++        Some(state.path()),
++    );
++    assert_eq!(output.status.code(), Some(2), "{output:?}");
++
+     // A file in a hidden folder is never served.
+     let output = cli_in(
+         &["browser", "open", hidden_page.to_str().unwrap()],
