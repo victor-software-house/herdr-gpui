@@ -1,0 +1,55 @@
+%YAML 1.2
+---
+schema: 1
+downstream:
+  remote: origin
+  branch: main
+  recovery_tag_prefix: forkctl/recovery
+  publish: propose
+upstream:
+  remote: upstream
+  url: https://github.com/penso/herdr-gpui.git
+  fetch_ref: refs/heads/main
+base:
+  target:
+    kind: tag
+    selector: refs/tags/v20261019.1
+    commit: aa1216ec6e88ca3224dee74cb1dcb22628b6145d
+  canonical: aa1216ec6e88ca3224dee74cb1dcb22628b6145d
+  stack: aa1216ec6e88ca3224dee74cb1dcb22628b6145d
+documents:
+  ledger: patches/LEDGER.md
+  exports: patches/exports
+bookkeeping_patch: fork-bookkeeping
+patches:
+  - name: downstream-ci
+    kind: tooling
+    purpose: "Run upstream CI on this repository's pull requests: upstream gates every CI job on github.repository == 'penso/herdr-gpui', and checks upstream changelog subjects that downstream patch commits do not follow."
+    upstream_status: not-submitted
+    drop_when: Upstream CI runs on any repository, or this repository gets CI of its own.
+    scope:
+      - .github/workflows/ci.yml
+  - name: no-dependabot
+    kind: tooling
+    purpose: "Stop Dependabot opening dependency pull requests here: dependencies follow upstream, which this stack takes by rebasing onto upstream release tags."
+    upstream_status: not-submitted
+    drop_when: This repository chooses its own dependency versions instead of upstream's.
+    scope:
+      - .github/dependabot.yml
+  - name: fork-bookkeeping
+    kind: tooling
+    purpose: Own fork policy, generated evidence, and integration configuration.
+    upstream_status: "inappropriate: downstream-only fork maintenance"
+    drop_when: The downstream fork is retired.
+    scope:
+      - patches/fork.yaml
+      - patches/LEDGER.md
+      - patches/exports/**
+      - .config/mise.toml
+      - mise.lock
+      - FORK.md
+disabled_patches: []
+history: []
+contracts:
+  allow_base: []
+  required_text: []
