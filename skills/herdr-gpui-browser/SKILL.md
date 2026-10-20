@@ -31,8 +31,8 @@ herdr-gpui browser open http://localhost:3000
 - A local file opens in a split next to your terminal: the user sees both,
   and the keyboard stays with your pane, so they can keep talking to you
   while the page updates. Later files you open join the same split.
-- A web address opens as a tab in your own workspace (`HERDR_WORKSPACE_ID`,
-  which Herdr sets in every pane) and the window switches to it. The
+- A web address opens as a tab in your own workspace, the one your pane is
+  in now, and the window switches to it. The
   terminal keeps running underneath; the user returns to it by clicking its
   tab.
 - Add `--tab` to open a file as a tab instead, or `--beside` to put a web

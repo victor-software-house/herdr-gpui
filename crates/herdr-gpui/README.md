@@ -2742,9 +2742,11 @@ herdr-gpui browser feedback --wait 600          # wait for the notes you send it
 herdr-gpui browser --help
 ```
 
-The tab joins the caller's own workspace, which Herdr names in the pane's
-`HERDR_WORKSPACE_ID`, and remembers the caller's `HERDR_PANE_ID` so notes on
-the page go back to it. The command talks to the running app over a socket at
+The tab joins the caller's own workspace and remembers the caller's pane, so
+notes on the page go back to it. Both come from asking Herdr where the pane
+in `HERDR_PANE_ID` is now: `pane move` gives a pane a new ID and workspace,
+while the `HERDR_WORKSPACE_ID` and `HERDR_PANE_ID` its shell inherited keep
+naming the old place. A pane that has closed counts as outside Herdr. The command talks to the running app over a socket at
 `$XDG_STATE_HOME/herdr/gpui/control.sock`, readable only by you, and exits with
 3 when the app is not running. On Windows it is a named pipe only your user
 can open ([details](../../docs/cli.md#windows)). Only processes on this

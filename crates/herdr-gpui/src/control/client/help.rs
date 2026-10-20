@@ -4,8 +4,10 @@ use crate::cli::control::FAMILIES;
 const COMMON: &str = "\
 Every command accepts --json, printing one JSON document, and --window ID,
 acting in that window (IDs come from `window list`). By default a command
-acts in the window showing the caller's workspace (HERDR_WORKSPACE_ID), and
-exits 5 when no window shows it; outside Herdr, in the frontmost window.
+acts in the window showing the caller's workspace: where Herdr says the
+caller's pane (HERDR_PANE_ID) is now, so a moved pane counts where it went,
+else HERDR_WORKSPACE_ID. It exits 5 when no window shows it; outside Herdr,
+or from a pane that closed, it acts in the frontmost window.
 Exit status: 0 done, 1 refused, 2 invalid arguments, 3 Herdr UI not running,
 4 nothing yet (no notes, no event), 5 not found, 6 busy (a dialog is open),
 7 timed out, 8 unsupported on this platform or by this app version.";
@@ -13,8 +15,8 @@ Exit status: 0 done, 1 refused, 2 invalid arguments, 3 Herdr UI not running,
 const BROWSER: &str = "\
 herdr-gpui browser open URL|FILE [--workspace ID] [--no-focus] [--beside|--tab]
     Show a web address, or a local HTML file, in a browser tab of the running
-    Herdr UI. The tab joins the caller's own workspace (HERDR_WORKSPACE_ID),
-    or the frontmost one outside Herdr. Showing the same page again from the
+    Herdr UI. The tab joins the caller's own workspace, where its pane is
+    now, or the frontmost one outside Herdr. Showing the same page again from the
     same pane reuses and reloads its tab. Bare hosts such as localhost:3000
     are accepted. A file is served with the other files in its folder.
     A file opened from a Herdr pane goes in a split next to that terminal,

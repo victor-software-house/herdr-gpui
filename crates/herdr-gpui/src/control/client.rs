@@ -6,6 +6,7 @@ mod browser;
 mod events;
 mod help;
 mod hosts;
+mod live_caller;
 mod local;
 mod open;
 mod settings;
@@ -165,10 +166,19 @@ pub(super) fn env_id(name: &str) -> Option<String> {
 }
 
 fn caller(workspace: Option<String>) -> crate::Result<Caller> {
+    let daemon_socket = caller_daemon()?;
+    let pane_var = env_id("HERDR_PANE_ID");
+    // Only a pane of a daemon on this machine can be asked where it is now.
+    let lookup = match (&pane_var, &daemon_socket) {
+        (Some(pane_id), Some(_)) => live_caller::lookup(pane_id),
+        _ => live_caller::Lookup::Unknown,
+    };
+    let (pane_id, workspace_id) =
+        live_caller::place(pane_var, env_id("HERDR_WORKSPACE_ID"), workspace, lookup);
     Ok(Caller {
-        pane_id: env_id("HERDR_PANE_ID"),
-        workspace_id: workspace.or_else(|| env_id("HERDR_WORKSPACE_ID")),
-        daemon_socket: caller_daemon()?,
+        pane_id,
+        workspace_id,
+        daemon_socket,
         window: None,
     })
 }
