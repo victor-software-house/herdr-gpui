@@ -250,6 +250,14 @@ fn local_pages_and_feedback_need_the_app_and_a_plain_folder() {
     let output = cli_in(&["browser", "open", page], Some(state.path()));
     assert_eq!(output.status.code(), Some(3), "{output:?}");
 
+    // A file not written yet is refused, not opened as a web address.
+    let missing = site.path().join("later.html");
+    let output = cli_in(
+        &["browser", "open", missing.to_str().unwrap()],
+        Some(state.path()),
+    );
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+
     // A file in a hidden folder is never served.
     let output = cli_in(
         &["browser", "open", hidden_page.to_str().unwrap()],

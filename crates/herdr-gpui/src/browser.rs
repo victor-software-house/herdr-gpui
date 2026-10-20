@@ -150,13 +150,19 @@ impl WebUrl {
 
     /// What someone typed into the address field: a bare host such as
     /// `localhost:3000` or `example.com/docs` gets a scheme, local hosts plain
-    /// http and everything else https.
+    /// http and everything else https. A file path is no address, so
+    /// `/private/tmp/page.html` never becomes `https://private/tmp/page.html`.
     pub(crate) fn from_typed(text: &str) -> crate::Result<Self> {
         let text = text.trim();
         if let Ok(url) = Self::try_from(text) {
             return Ok(url);
         }
-        if text.contains("://") {
+        // `C:\page.html` would otherwise read as the host `c`.
+        let drive = matches!(
+            text.as_bytes(),
+            [letter, b':', b'\\' | b'/', ..] if letter.is_ascii_alphabetic()
+        );
+        if text.contains("://") || text.starts_with(['/', '\\', '.', '~']) || drive {
             return Err(crate::Error::InvalidBrowserUrl);
         }
         let host = text.split(['/', ':', '?', '#']).next().unwrap_or_default();
@@ -251,6 +257,21 @@ mod tests {
         assert!(typed("file:///etc/passwd").is_err());
         assert!(typed("ftp://a.test").is_err());
         assert!(typed("").is_err());
+    }
+
+    #[test]
+    fn typed_paths_are_not_addresses() {
+        for path in [
+            "/private/tmp/page.html",
+            "./page.html",
+            "../page.html",
+            "~/page.html",
+            r"\\server\share\page.html",
+            r"C:\Users\me\page.html",
+            "c:/page.html",
+        ] {
+            assert!(WebUrl::from_typed(path).is_err(), "{path}");
+        }
     }
 
     #[test]
