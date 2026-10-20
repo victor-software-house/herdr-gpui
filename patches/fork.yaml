@@ -56,6 +56,24 @@ patches:
       - crates/herdr-gpui/src/browser/store.rs
       - crates/herdr-gpui/src/browser/store/tests.rs
       - crates/herdr-gpui/src/browser/view/agent_tab.rs
+  - name: origins-follow-panes
+    kind: source
+    purpose: "Keep each tab's agent pane current: pane move gives a pane a new ID and a closed pane has none, so notes, browser reload, and browser feedback missed tabs opened before a move, and notes for a closed pane's tab were kept where no agent could fetch them."
+    upstream_status: not-submitted
+    drop_when: Upstream follows moved and closed panes for browser tab origins.
+    scope:
+      - crates/herdr-gpui/src/pane_lookup.rs
+      - crates/herdr-gpui/src/pane_lookup/**
+      - crates/herdr-gpui/src/main.rs
+      - crates/herdr-gpui/src/control/client/live_caller.rs
+      - crates/herdr-gpui/src/control/client/live_caller/**
+      - crates/herdr-gpui/src/browser/view.rs
+      - crates/herdr-gpui/src/browser/view/origins.rs
+      - crates/herdr-gpui/src/browser/store.rs
+      - crates/herdr-gpui/src/browser/store/tests.rs
+      - crates/herdr-gpui/src/browser/feedback.rs
+      - crates/herdr-gpui/src/browser/feedback/tests.rs
+      - crates/herdr-gpui/src/browser/annotate_view/panel.rs
   - name: downstream-ci
     kind: tooling
     purpose: "Run upstream CI on this repository's pull requests: upstream gates every CI job on github.repository == 'penso/herdr-gpui', and checks upstream changelog subjects that downstream patch commits do not follow."

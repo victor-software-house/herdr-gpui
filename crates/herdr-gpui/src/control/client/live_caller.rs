@@ -8,60 +8,14 @@
 //! resolves a moved pane's old ID to the pane itself, so asking the daemon
 //! for the caller's pane gives the workspace it is in now.
 
-use serde_json::Value;
-
-/// What the daemon says about the caller's pane.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum Lookup {
-    /// The pane lives, now as `pane_id` in `workspace_id`.
-    Live {
-        pane_id: String,
-        workspace_id: String,
-    },
-    /// The pane closed: neither variable names where the caller is.
-    Gone,
-    /// No answer, such as no `herdr` executable or no daemon: the variables
-    /// are all there is.
-    Unknown,
-}
+pub(super) use crate::pane_lookup::Lookup;
 
 /// Asks the caller's daemon, through the `herdr` CLI Herdr gave the pane,
 /// where `pane_id` is now. The CLI finds the daemon from the same pane
 /// variables, as it does when an agent runs it.
 pub(super) fn lookup(pane_id: &str) -> Lookup {
     let program = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
-    let Ok(output) = herdr_client::new_command(program)
-        .args(["pane", "get", pane_id])
-        .output()
-    else {
-        return Lookup::Unknown;
-    };
-    // The CLI prints a result on stdout and a server error on stderr.
-    parse(if output.status.success() {
-        &output.stdout
-    } else {
-        &output.stderr
-    })
-}
-
-/// The answer in a `herdr pane get` reply.
-pub(super) fn parse(reply: &[u8]) -> Lookup {
-    let Ok(reply) = serde_json::from_slice::<Value>(reply) else {
-        return Lookup::Unknown;
-    };
-    if reply["error"]["code"] == "pane_not_found" {
-        return Lookup::Gone;
-    }
-    let pane = &reply["result"]["pane"];
-    match (pane["pane_id"].as_str(), pane["workspace_id"].as_str()) {
-        (Some(pane_id), Some(workspace_id)) if !pane_id.is_empty() && !workspace_id.is_empty() => {
-            Lookup::Live {
-                pane_id: pane_id.to_owned(),
-                workspace_id: workspace_id.to_owned(),
-            }
-        }
-        _ => Lookup::Unknown,
-    }
+    crate::pane_lookup::ask(herdr_client::new_command(program), pane_id)
 }
 
 /// The pane and workspace a request carries. A `--workspace` the caller

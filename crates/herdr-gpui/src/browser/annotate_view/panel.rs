@@ -281,6 +281,18 @@ impl HerdrWindow {
                                 cx.listener(move |this, _, _, cx| this.withdraw_notes(id, cx)),
                             ))
                         })
+                        // A page the user opened, or one whose agent's pane
+                        // closed: Copy is the only way out, so say why.
+                        .when(!origin && queued.is_none(), |row| {
+                            row.child(
+                                div()
+                                    .id("annotation-no-agent")
+                                    .debug_selector(|| "annotation-no-agent".into())
+                                    .w_full()
+                                    .text_color(rgb(theme.muted))
+                                    .child("No agent is attached to this page. Copy the notes to paste them where you want."),
+                            )
+                        })
                         .when(origin && queued.is_none(), |row| {
                             row.child(button("annotation-send", send_label.into(), true).on_click(
                                 cx.listener(move |this, _, _, cx| this.send_notes(&tab_for_send, cx)),
