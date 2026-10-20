@@ -34,11 +34,13 @@ Every command accepts:
 - `--json`: print one JSON document instead of text. Errors become
   `{"error": {"code", "message"}}` on standard output.
 - `--window ID`: act in that window (IDs come from `window list`). By default
-  a command acts in the window showing the caller's workspace
-  (`HERDR_WORKSPACE_ID`, which Herdr sets in every pane). When no window shows
-  it, as for a session the app does not show, the command exits 5 rather than
-  act on another session's window. Outside Herdr, it acts in the frontmost
-  window.
+  a command acts in the window showing the caller's workspace: the one Herdr
+  says the caller's pane (`HERDR_PANE_ID`) is in now, so a pane moved to
+  another workspace counts where it went, else `HERDR_WORKSPACE_ID`, which
+  Herdr sets when the pane starts. When no window shows it, as for a session
+  the app does not show, the command exits 5 rather than act on another
+  session's window. Outside Herdr, or from a pane that has closed, it acts in
+  the frontmost window.
 
 | Exit | Meaning |
 | --- | --- |

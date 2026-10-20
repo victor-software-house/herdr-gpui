@@ -5,7 +5,7 @@ downstream:
   remote: origin
   branch: main
   recovery_tag_prefix: forkctl/recovery
-  publish: propose
+  publish: append
 upstream:
   remote: upstream
   url: https://github.com/penso/herdr-gpui.git
@@ -22,6 +22,22 @@ documents:
   exports: patches/exports
 bookkeeping_patch: fork-bookkeeping
 patches:
+  - name: caller-follows-pane
+    kind: source
+    purpose: "Open tabs where the caller's pane is now: HERDR_WORKSPACE_ID and HERDR_PANE_ID are set once when a pane starts, so after pane move, or after the pane closes under a background agent, tabs landed in a workspace the user was not looking at."
+    upstream_status: not-submitted
+    drop_when: >-
+      Upstream resolves the caller's pane through the daemon instead of trusting
+      HERDR_WORKSPACE_ID.
+    scope:
+      - crates/herdr-gpui/src/control/client.rs
+      - crates/herdr-gpui/src/control/client/live_caller.rs
+      - crates/herdr-gpui/src/control/client/live_caller/**
+      - crates/herdr-gpui/src/control/client/browser.rs
+      - crates/herdr-gpui/src/control/client/help.rs
+      - crates/herdr-gpui/README.md
+      - docs/cli.md
+      - skills/herdr-gpui-browser/SKILL.md
   - name: downstream-ci
     kind: tooling
     purpose: "Run upstream CI on this repository's pull requests: upstream gates every CI job on github.repository == 'penso/herdr-gpui', and checks upstream changelog subjects that downstream patch commits do not follow."

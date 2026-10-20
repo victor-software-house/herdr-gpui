@@ -28,12 +28,16 @@ mise run fork patch create NAME \
 git add -- crates/herdr-gpui/src/path/file.rs
 mise run fork patch refresh
 mise run fork patch finish
-mise run fork publish
+mise run fork publish --propose
 ```
 
-`publish` defaults to `propose`: it pushes `forkctl/proposal/main` and opens or updates its draft pull request.
+`publish --propose` pushes `forkctl/proposal/main` and opens or updates its draft pull request.
 CI runs on that pull request.
-After review, `mise run fork publish --promote` moves `main` to the proposed stack.
+After review, `mise run fork publish` moves `main` to the reviewed stack;
+then close the proposal pull request, which is never merged.
+`publish` defaults to `append`, which keeps the previous `main` as an ancestor,
+so `main` only fast-forwards, as the organization's force-push rule requires.
+Do not use `publish --promote`: it rewrites `main`, and the rule rejects it.
 
 ## Follow upstream
 
@@ -41,7 +45,7 @@ After review, `mise run fork publish --promote` moves `main` to the proposed sta
 git fetch upstream --tags
 mise run fork rebase --onto refs/tags/vYYYYMMDD.N --dry-run
 mise run fork rebase --onto refs/tags/vYYYYMMDD.N
-mise run fork publish
+mise run fork publish --propose
 ```
 
 Rebase onto release tags, not upstream `main`, so the base is always a published version.
