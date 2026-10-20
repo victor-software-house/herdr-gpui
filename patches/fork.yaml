@@ -38,6 +38,14 @@ patches:
       - crates/herdr-gpui/README.md
       - docs/cli.md
       - skills/herdr-gpui-browser/SKILL.md
+  - name: paths-are-not-addresses
+    kind: source
+    purpose: "Refuse a file path typed as an address: a path to a file not written yet, such as /private/tmp/page.html, became https://private/tmp/page.html and opened a broken web tab instead of failing."
+    upstream_status: not-submitted
+    drop_when: Upstream refuses paths in WebUrl::from_typed.
+    scope:
+      - crates/herdr-gpui/src/browser.rs
+      - crates/herdr-gpui/tests/cli.rs
   - name: downstream-ci
     kind: tooling
     purpose: "Run upstream CI on this repository's pull requests: upstream gates every CI job on github.repository == 'penso/herdr-gpui', and checks upstream changelog subjects that downstream patch commits do not follow."
