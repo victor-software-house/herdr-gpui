@@ -25,13 +25,24 @@ impl HerdrWindow {
     ) -> Option<TabId> {
         let scope = scope(&self.endpoints[index]);
         // An agent showing the same page again gets its tab back, reloaded,
-        // rather than another tab for every revision.
+        // rather than another tab for every revision; at another `#` place
+        // on it, the tab goes there.
         let before =
             store(cx).and_then(|store| store.opened_before(&scope, workspace, origin, location));
         let id = match before {
             Some(id) => {
+                let moved = store(cx)
+                    .and_then(|store| store.get(id))
+                    .is_some_and(|tab| tab.location.as_ref() != Some(location));
+                if moved {
+                    Store::update(cx, |store| store.visited(id, Some(location.clone()), None));
+                }
                 #[cfg(any(target_os = "macos", windows))]
-                self.browser.pages.reload(id);
+                if moved {
+                    self.browser.pages.load(id, location);
+                } else {
+                    self.browser.pages.reload(id);
+                }
                 id
             }
             None => {

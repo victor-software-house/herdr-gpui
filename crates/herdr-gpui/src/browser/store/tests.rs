@@ -172,6 +172,35 @@ fn an_agent_reopening_its_page_reuses_the_tab() {
     assert_eq!(ids, [mine]);
 }
 
+#[test]
+fn a_place_on_an_open_page_reuses_its_tab() {
+    let mut store = Store::default();
+    let scope = Scope::endpoint("local");
+    let button = store
+        .open(
+            scope.clone(),
+            "w_1",
+            url("http://localhost:4880/components/button"),
+            Some("w_1:p1".into()),
+        )
+        .unwrap();
+    let reopened = |store: &Store, address| {
+        store.opened_before(&scope, "w_1", Some("w_1:p1"), &url(address).unwrap())
+    };
+    assert_eq!(
+        reopened(&store, "http://localhost:4880/components/button#props"),
+        Some(button)
+    );
+    assert_eq!(
+        reopened(&store, "http://localhost:4880/components/card#props"),
+        None
+    );
+    assert_eq!(
+        reopened(&store, "http://localhost:4880/components/button?theme=dark"),
+        None
+    );
+}
+
 /// A workspace's VS Code tab is listed in its strips like any tab, and is
 /// still its one VS Code tab, never handed to an agent.
 #[test]
