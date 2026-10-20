@@ -1,0 +1,9 @@
+# Downstream tooling. Upstream owns `mise.toml` (the Rust toolchain); this
+# file mounts the forkctl task that manages the downstream patch stack.
+[env]
+FORK_MANIFEST = "patches/fork.yaml"
+
+[task_config]
+includes = [
+  "git::https://github.com/victor-software-house/forkctl.git//tasks/fork?ref=v0.0.41",
+]

@@ -1,0 +1,319 @@
+caller-follows-pane
+
+From: Victor Araújo <victor@victor-software-house.com>
+
+Downstream-Reason: Open tabs where the caller's pane is now: HERDR_WORKSPACE_ID and HERDR_PANE_ID are set once when a pane starts, so after pane move, or after the pane closes under a background agent, tabs landed in a workspace the user was not looking at.
+Upstream-Status: not-submitted
+Drop-When: Upstream resolves the caller's pane through the daemon instead of trusting HERDR_WORKSPACE_ID.
+---
+ crates/herdr-gpui/README.md                        |    8 +-
+ crates/herdr-gpui/src/control/client.rs            |   16 +++-
+ crates/herdr-gpui/src/control/client/browser.rs    |    4 +
+ crates/herdr-gpui/src/control/client/help.rs       |   10 +-
+ .../herdr-gpui/src/control/client/live_caller.rs   |   89 ++++++++++++++++++++
+ .../src/control/client/live_caller/tests.rs        |   63 ++++++++++++++
+ docs/cli.md                                        |   12 ++-
+ skills/herdr-gpui-browser/SKILL.md                 |    4 -
+ 8 files changed, 188 insertions(+), 18 deletions(-)
+ create mode 100644 crates/herdr-gpui/src/control/client/live_caller.rs
+ create mode 100644 crates/herdr-gpui/src/control/client/live_caller/tests.rs
+
+diff --git a/crates/herdr-gpui/README.md b/crates/herdr-gpui/README.md
+index f6a16a85..62d5ece0 100644
+--- a/crates/herdr-gpui/README.md
++++ b/crates/herdr-gpui/README.md
+@@ -2742,9 +2742,11 @@ herdr-gpui browser feedback --wait 600          # wait for the notes you send it
+ herdr-gpui browser --help
+ ```
+ 
+-The tab joins the caller's own workspace, which Herdr names in the pane's
+-`HERDR_WORKSPACE_ID`, and remembers the caller's `HERDR_PANE_ID` so notes on
+-the page go back to it. The command talks to the running app over a socket at
++The tab joins the caller's own workspace and remembers the caller's pane, so
++notes on the page go back to it. Both come from asking Herdr where the pane
++in `HERDR_PANE_ID` is now: `pane move` gives a pane a new ID and workspace,
++while the `HERDR_WORKSPACE_ID` and `HERDR_PANE_ID` its shell inherited keep
++naming the old place. A pane that has closed counts as outside Herdr. The command talks to the running app over a socket at
+ `$XDG_STATE_HOME/herdr/gpui/control.sock`, readable only by you, and exits with
+ 3 when the app is not running. On Windows it is a named pipe only your user
+ can open ([details](../../docs/cli.md#windows)). Only processes on this
+diff --git a/crates/herdr-gpui/src/control/client.rs b/crates/herdr-gpui/src/control/client.rs
+index 6f28bf92..5f8c6918 100644
+--- a/crates/herdr-gpui/src/control/client.rs
++++ b/crates/herdr-gpui/src/control/client.rs
+@@ -6,6 +6,7 @@ mod browser;
+ mod events;
+ mod help;
+ mod hosts;
++mod live_caller;
+ mod local;
+ mod open;
+ mod settings;
+@@ -165,10 +166,19 @@ pub(super) fn env_id(name: &str) -> Option<String> {
+ }
+ 
+ fn caller(workspace: Option<String>) -> crate::Result<Caller> {
++    let daemon_socket = caller_daemon()?;
++    let pane_var = env_id("HERDR_PANE_ID");
++    // Only a pane of a daemon on this machine can be asked where it is now.
++    let lookup = match (&pane_var, &daemon_socket) {
++        (Some(pane_id), Some(_)) => live_caller::lookup(pane_id),
++        _ => live_caller::Lookup::Unknown,
++    };
++    let (pane_id, workspace_id) =
++        live_caller::place(pane_var, env_id("HERDR_WORKSPACE_ID"), workspace, lookup);
+     Ok(Caller {
+-        pane_id: env_id("HERDR_PANE_ID"),
+-        workspace_id: workspace.or_else(|| env_id("HERDR_WORKSPACE_ID")),
+-        daemon_socket: caller_daemon()?,
++        pane_id,
++        workspace_id,
++        daemon_socket,
+         window: None,
+     })
+ }
+diff --git a/crates/herdr-gpui/src/control/client/browser.rs b/crates/herdr-gpui/src/control/client/browser.rs
+index ecd625cb..2c643255 100644
+--- a/crates/herdr-gpui/src/control/client/browser.rs
++++ b/crates/herdr-gpui/src/control/client/browser.rs
+@@ -111,7 +111,9 @@ fn reload() -> crate::Result<Output> {
+ /// The user's notes for this pane: page, review, and terminal notes alike
+ /// are kept for it whenever they could not be typed into the pane.
+ pub(super) fn feedback(wait: u64, _: &Context) -> crate::Result<Output> {
+-    let pane_id = super::env_id("HERDR_PANE_ID").ok_or(crate::Error::ControlRejected {
++    // Pages remember the pane where it is now, which a moved pane's
++    // HERDR_PANE_ID no longer names.
++    let pane_id = caller(None)?.pane_id.ok_or(crate::Error::ControlRejected {
+         code: ErrorCode::InvalidRequest,
+         message: "feedback runs in the Herdr pane that should receive the notes".into(),
+     })?;
+diff --git a/crates/herdr-gpui/src/control/client/help.rs b/crates/herdr-gpui/src/control/client/help.rs
+index b5a30fea..e9c2fa57 100644
+--- a/crates/herdr-gpui/src/control/client/help.rs
++++ b/crates/herdr-gpui/src/control/client/help.rs
+@@ -4,8 +4,10 @@ use crate::cli::control::FAMILIES;
+ const COMMON: &str = "\
+ Every command accepts --json, printing one JSON document, and --window ID,
+ acting in that window (IDs come from `window list`). By default a command
+-acts in the window showing the caller's workspace (HERDR_WORKSPACE_ID), and
+-exits 5 when no window shows it; outside Herdr, in the frontmost window.
++acts in the window showing the caller's workspace: where Herdr says the
++caller's pane (HERDR_PANE_ID) is now, so a moved pane counts where it went,
++else HERDR_WORKSPACE_ID. It exits 5 when no window shows it; outside Herdr,
++or from a pane that closed, it acts in the frontmost window.
+ Exit status: 0 done, 1 refused, 2 invalid arguments, 3 Herdr UI not running,
+ 4 nothing yet (no notes, no event), 5 not found, 6 busy (a dialog is open),
+ 7 timed out, 8 unsupported on this platform or by this app version.";
+@@ -13,8 +15,8 @@ Exit status: 0 done, 1 refused, 2 invalid arguments, 3 Herdr UI not running,
+ const BROWSER: &str = "\
+ herdr-gpui browser open URL|FILE [--workspace ID] [--no-focus] [--beside|--tab]
+     Show a web address, or a local HTML file, in a browser tab of the running
+-    Herdr UI. The tab joins the caller's own workspace (HERDR_WORKSPACE_ID),
+-    or the frontmost one outside Herdr. Showing the same page again from the
++    Herdr UI. The tab joins the caller's own workspace, where its pane is
++    now, or the frontmost one outside Herdr. Showing the same page again from the
+     same pane reuses and reloads its tab. Bare hosts such as localhost:3000
+     are accepted. A file is served with the other files in its folder.
+     A file opened from a Herdr pane goes in a split next to that terminal,
+diff --git a/crates/herdr-gpui/src/control/client/live_caller.rs b/crates/herdr-gpui/src/control/client/live_caller.rs
+new file mode 100644
+index 00000000..19bd635e
+--- /dev/null
++++ b/crates/herdr-gpui/src/control/client/live_caller.rs
+@@ -0,0 +1,89 @@
++//! The caller's pane and workspace as its daemon sees them now.
++//!
++//! Herdr sets `HERDR_PANE_ID` and `HERDR_WORKSPACE_ID` once, when it starts
++//! a pane's shell. `pane move` to another workspace gives the pane a new ID
++//! and leaves both variables naming the old place, and a pane that closed
++//! leaves an agent it started naming a pane that is gone. A tab opened from
++//! those variables lands in a workspace the user is not looking at. Herdr
++//! resolves a moved pane's old ID to the pane itself, so asking the daemon
++//! for the caller's pane gives the workspace it is in now.
++
++use serde_json::Value;
++
++/// What the daemon says about the caller's pane.
++#[derive(Debug, PartialEq, Eq)]
++pub(super) enum Lookup {
++    /// The pane lives, now as `pane_id` in `workspace_id`.
++    Live {
++        pane_id: String,
++        workspace_id: String,
++    },
++    /// The pane closed: neither variable names where the caller is.
++    Gone,
++    /// No answer, such as no `herdr` executable or no daemon: the variables
++    /// are all there is.
++    Unknown,
++}
++
++/// Asks the caller's daemon, through the `herdr` CLI Herdr gave the pane,
++/// where `pane_id` is now. The CLI finds the daemon from the same pane
++/// variables, as it does when an agent runs it.
++pub(super) fn lookup(pane_id: &str) -> Lookup {
++    let program = std::env::var_os("HERDR_BIN_PATH").unwrap_or_else(|| "herdr".into());
++    let Ok(output) = herdr_client::new_command(program)
++        .args(["pane", "get", pane_id])
++        .output()
++    else {
++        return Lookup::Unknown;
++    };
++    // The CLI prints a result on stdout and a server error on stderr.
++    parse(if output.status.success() {
++        &output.stdout
++    } else {
++        &output.stderr
++    })
++}
++
++/// The answer in a `herdr pane get` reply.
++pub(super) fn parse(reply: &[u8]) -> Lookup {
++    let Ok(reply) = serde_json::from_slice::<Value>(reply) else {
++        return Lookup::Unknown;
++    };
++    if reply["error"]["code"] == "pane_not_found" {
++        return Lookup::Gone;
++    }
++    let pane = &reply["result"]["pane"];
++    match (pane["pane_id"].as_str(), pane["workspace_id"].as_str()) {
++        (Some(pane_id), Some(workspace_id)) if !pane_id.is_empty() && !workspace_id.is_empty() => {
++            Lookup::Live {
++                pane_id: pane_id.to_owned(),
++                workspace_id: workspace_id.to_owned(),
++            }
++        }
++        _ => Lookup::Unknown,
++    }
++}
++
++/// The pane and workspace a request carries. A `--workspace` the caller
++/// named wins. Otherwise the daemon's answer replaces the variables, and a
++/// pane that closed leaves neither, so the request acts as one from outside
++/// Herdr does: in the frontmost window.
++pub(super) fn place(
++    pane_var: Option<String>,
++    workspace_var: Option<String>,
++    named: Option<String>,
++    lookup: Lookup,
++) -> (Option<String>, Option<String>) {
++    let (pane_id, workspace_id) = match lookup {
++        Lookup::Live {
++            pane_id,
++            workspace_id,
++        } => (Some(pane_id), Some(workspace_id)),
++        Lookup::Gone => (None, None),
++        Lookup::Unknown => (pane_var, workspace_var),
++    };
++    (pane_id, named.or(workspace_id))
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/herdr-gpui/src/control/client/live_caller/tests.rs b/crates/herdr-gpui/src/control/client/live_caller/tests.rs
+new file mode 100644
+index 00000000..d08b100a
+--- /dev/null
++++ b/crates/herdr-gpui/src/control/client/live_caller/tests.rs
+@@ -0,0 +1,63 @@
++use super::*;
++
++fn some(id: &str) -> Option<String> {
++    Some(id.to_owned())
++}
++
++#[test]
++fn a_moved_pane_opens_in_the_workspace_it_is_in_now() {
++    // The agent's shell still has the variables of the workspace it started
++    // in; the daemon resolves the old pane ID to the pane in its new place.
++    let reply = br#"{"id":"cli:pane:get","result":{"type":"pane_info","pane":{"pane_id":"w86:p3","workspace_id":"w86","tab_id":"w86:t1"}}}"#;
++    assert_eq!(
++        place(some("w85:p2"), some("w85"), None, parse(reply)),
++        (some("w86:p3"), some("w86"))
++    );
++}
++
++#[test]
++fn a_closed_pane_names_no_workspace_so_the_frontmost_window_opens_it() {
++    let reply = br#"{"error":{"code":"pane_not_found","message":"pane w7Y:p1 not found"},"id":"cli:pane:get"}"#;
++    assert_eq!(parse(reply), Lookup::Gone);
++    assert_eq!(
++        place(some("w7Y:p1"), some("w7Y"), None, Lookup::Gone),
++        (None, None)
++    );
++}
++
++#[test]
++fn a_named_workspace_wins_over_the_daemon_and_the_variables() {
++    let live = Lookup::Live {
++        pane_id: "w86:p3".into(),
++        workspace_id: "w86".into(),
++    };
++    assert_eq!(
++        place(some("w85:p2"), some("w85"), some("w8E"), live),
++        (some("w86:p3"), some("w8E"))
++    );
++    assert_eq!(
++        place(some("w7Y:p1"), some("w7Y"), some("w8E"), Lookup::Gone),
++        (None, some("w8E"))
++    );
++}
++
++#[test]
++fn without_an_answer_the_variables_still_place_the_tab() {
++    for reply in [
++        &b""[..],
++        b"not json",
++        br#"{"error":{"code":"server_unavailable"}}"#,
++        br#"{"result":{"pane":{}}}"#,
++    ] {
++        assert_eq!(
++            parse(reply),
++            Lookup::Unknown,
++            "{}",
++            String::from_utf8_lossy(reply)
++        );
++    }
++    assert_eq!(
++        place(some("w1:p1"), some("w1"), None, Lookup::Unknown),
++        (some("w1:p1"), some("w1"))
++    );
++}
+diff --git a/docs/cli.md b/docs/cli.md
+index 14059044..a4e5e21f 100644
+--- a/docs/cli.md
++++ b/docs/cli.md
+@@ -34,11 +34,13 @@ Every command accepts:
+ - `--json`: print one JSON document instead of text. Errors become
+   `{"error": {"code", "message"}}` on standard output.
+ - `--window ID`: act in that window (IDs come from `window list`). By default
+-  a command acts in the window showing the caller's workspace
+-  (`HERDR_WORKSPACE_ID`, which Herdr sets in every pane). When no window shows
+-  it, as for a session the app does not show, the command exits 5 rather than
+-  act on another session's window. Outside Herdr, it acts in the frontmost
+-  window.
++  a command acts in the window showing the caller's workspace: the one Herdr
++  says the caller's pane (`HERDR_PANE_ID`) is in now, so a pane moved to
++  another workspace counts where it went, else `HERDR_WORKSPACE_ID`, which
++  Herdr sets when the pane starts. When no window shows it, as for a session
++  the app does not show, the command exits 5 rather than act on another
++  session's window. Outside Herdr, or from a pane that has closed, it acts in
++  the frontmost window.
+ 
+ | Exit | Meaning |
+ | --- | --- |
+diff --git a/skills/herdr-gpui-browser/SKILL.md b/skills/herdr-gpui-browser/SKILL.md
+index adb0f75c..0bbfe188 100644
+--- a/skills/herdr-gpui-browser/SKILL.md
++++ b/skills/herdr-gpui-browser/SKILL.md
+@@ -31,8 +31,8 @@ herdr-gpui browser open http://localhost:3000
+ - A local file opens in a split next to your terminal: the user sees both,
+   and the keyboard stays with your pane, so they can keep talking to you
+   while the page updates. Later files you open join the same split.
+-- A web address opens as a tab in your own workspace (`HERDR_WORKSPACE_ID`,
+-  which Herdr sets in every pane) and the window switches to it. The
++- A web address opens as a tab in your own workspace, the one your pane is
++  in now, and the window switches to it. The
+   terminal keeps running underneath; the user returns to it by clicking its
+   tab.
+ - Add `--tab` to open a file as a tab instead, or `--beside` to put a web

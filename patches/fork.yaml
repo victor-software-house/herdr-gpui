@@ -1,0 +1,89 @@
+%YAML 1.2
+---
+schema: 1
+downstream:
+  remote: origin
+  branch: main
+  recovery_tag_prefix: forkctl/recovery
+  publish: append
+upstream:
+  remote: upstream
+  url: https://github.com/penso/herdr-gpui.git
+  fetch_ref: refs/heads/main
+base:
+  target:
+    kind: tag
+    selector: refs/tags/v20261019.1
+    commit: aa1216ec6e88ca3224dee74cb1dcb22628b6145d
+  canonical: aa1216ec6e88ca3224dee74cb1dcb22628b6145d
+  stack: aa1216ec6e88ca3224dee74cb1dcb22628b6145d
+documents:
+  ledger: patches/LEDGER.md
+  exports: patches/exports
+bookkeeping_patch: fork-bookkeeping
+patches:
+  - name: caller-follows-pane
+    kind: source
+    purpose: "Open tabs where the caller's pane is now: HERDR_WORKSPACE_ID and HERDR_PANE_ID are set once when a pane starts, so after pane move, or after the pane closes under a background agent, tabs landed in a workspace the user was not looking at."
+    upstream_status: not-submitted
+    drop_when: >-
+      Upstream resolves the caller's pane through the daemon instead of trusting
+      HERDR_WORKSPACE_ID.
+    scope:
+      - crates/herdr-gpui/src/control/client.rs
+      - crates/herdr-gpui/src/control/client/live_caller.rs
+      - crates/herdr-gpui/src/control/client/live_caller/**
+      - crates/herdr-gpui/src/control/client/browser.rs
+      - crates/herdr-gpui/src/control/client/help.rs
+      - crates/herdr-gpui/README.md
+      - docs/cli.md
+      - skills/herdr-gpui-browser/SKILL.md
+  - name: paths-are-not-addresses
+    kind: source
+    purpose: "Refuse a file path typed as an address: a path to a file not written yet, such as /private/tmp/page.html, became https://private/tmp/page.html and opened a broken web tab instead of failing."
+    upstream_status: not-submitted
+    drop_when: Upstream refuses paths in WebUrl::from_typed.
+    scope:
+      - crates/herdr-gpui/src/browser.rs
+      - crates/herdr-gpui/tests/cli.rs
+  - name: fragment-reuses-tab
+    kind: source
+    purpose: "Reuse an agent's tab for the same page at another #fragment: opening localhost:4880/components/button#props beside an open localhost:4880/components/button stacked a second tab, because tabs were matched on the whole address."
+    upstream_status: not-submitted
+    drop_when: Upstream matches reopened pages without their fragment.
+    scope:
+      - crates/herdr-gpui/src/browser/location.rs
+      - crates/herdr-gpui/src/browser/store.rs
+      - crates/herdr-gpui/src/browser/store/tests.rs
+      - crates/herdr-gpui/src/browser/view/agent_tab.rs
+  - name: downstream-ci
+    kind: tooling
+    purpose: "Run upstream CI on this repository's pull requests: upstream gates every CI job on github.repository == 'penso/herdr-gpui', and checks upstream changelog subjects that downstream patch commits do not follow."
+    upstream_status: not-submitted
+    drop_when: Upstream CI runs on any repository, or this repository gets CI of its own.
+    scope:
+      - .github/workflows/ci.yml
+  - name: no-dependabot
+    kind: tooling
+    purpose: "Stop Dependabot opening dependency pull requests here: dependencies follow upstream, which this stack takes by rebasing onto upstream release tags."
+    upstream_status: not-submitted
+    drop_when: This repository chooses its own dependency versions instead of upstream's.
+    scope:
+      - .github/dependabot.yml
+  - name: fork-bookkeeping
+    kind: tooling
+    purpose: Own fork policy, generated evidence, and integration configuration.
+    upstream_status: "inappropriate: downstream-only fork maintenance"
+    drop_when: The downstream fork is retired.
+    scope:
+      - patches/fork.yaml
+      - patches/LEDGER.md
+      - patches/exports/**
+      - .config/mise.toml
+      - mise.lock
+      - FORK.md
+disabled_patches: []
+history: []
+contracts:
+  allow_base: []
+  required_text: []
